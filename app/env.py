@@ -1,5 +1,10 @@
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
 DEFAULT_SYSTEM_TEXT = """
 You are a bot in a slack chat room. You might receive messages from multiple people.
 Format bold text *like this*, italic text _like this_ and strikethrough text ~like this~.

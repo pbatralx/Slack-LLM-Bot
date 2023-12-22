@@ -6,9 +6,12 @@ import json
 from typing import List, Dict, Any, Generator, Tuple, Optional, Union
 from importlib import import_module
 
-import openai
-from openai.error import Timeout
-from openai.openai_object import OpenAIObject
+from openai import OpenAI
+# from openai.error import Timeout
+# from openai.openai_object import OpenAIObject
+
+from openai import APITimeoutError
+from openai import ChatCompletion
 import tiktoken
 
 from slack_bolt import BoltContext
@@ -47,7 +50,8 @@ def format_openai_message_content(content: str, translate_markdown: bool) -> str
 
     # Unescape &, < and >, since Slack replaces these with their HTML equivalents
     # See also: https://api.slack.com/reference/surfaces/formatting#escaping
-    content = content.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    content = content.replace("&lt;", "<").replace(
+        "&gt;", ">").replace("&amp;", "&")
 
     # Convert from Slack mrkdwn to markdown format
     if translate_markdown:
@@ -63,10 +67,13 @@ def messages_within_context_window(
     # Remove old messages to make sure we have room for max_tokens
     # See also: https://platform.openai.com/docs/guides/chat/introduction
     # > total tokens must be below the model’s maximum limit (e.g., 4096 tokens for gpt-3.5-turbo-0301)
-    max_context_tokens = context_length(context.get("OPENAI_MODEL")) - MAX_TOKENS - 1
+    max_context_tokens = context_length(
+        context.get("OPENAI_MODEL")) - MAX_TOKENS - 1
     if context.get("OPENAI_FUNCTION_CALL_MODULE_NAME") is not None:
-        max_context_tokens -= calculate_tokens_necessary_for_function_call(context)
-    num_context_tokens = 0  # Number of tokens in the context window just before the earliest message is deleted
+        max_context_tokens -= calculate_tokens_necessary_for_function_call(
+            context)
+    # Number of tokens in the context window just before the earliest message is deleted
+    num_context_tokens = 0
     while (num_tokens := calculate_num_tokens(messages)) > max_context_tokens:
         removed = False
         for i, message in enumerate(messages):
@@ -96,9 +103,11 @@ def make_synchronous_openai_call(
     openai_api_version: str,
     openai_deployment_id: str,
     timeout_seconds: int,
-) -> OpenAIObject:
-    return openai.ChatCompletion.create(
-        api_key=openai_api_key,
+) -> ChatCompletion:
+    openai_client = OpenAI(api_key=openai_api_key,
+                    base_url=openai_api_base,)
+
+    return openai_client.chat.completions.create(
         model=model,
         messages=messages,
         top_p=1,
@@ -110,12 +119,10 @@ def make_synchronous_openai_call(
         logit_bias={},
         user=user,
         stream=False,
-        api_type=openai_api_type,
-        api_base=openai_api_base,
-        api_version=openai_api_version,
-        deployment_id=openai_deployment_id,
-        request_timeout=timeout_seconds,
-    )
+        #   api_type=openai_api_type,
+        #   api_version=openai_api_version,
+        #   deployment_id=openai_deployment_id,
+        timeout=timeout_seconds)
 
 
 def start_receiving_openai_response(
@@ -130,12 +137,16 @@ def start_receiving_openai_response(
     openai_api_version: str,
     openai_deployment_id: str,
     function_call_module_name: Optional[str],
-) -> Generator[OpenAIObject, Any, None]:
+) -> Generator[ChatCompletion, Any, None]:
     kwargs = {}
+    
     if function_call_module_name is not None:
-        kwargs["functions"] = import_module(function_call_module_name).functions
-    return openai.ChatCompletion.create(
-        api_key=openai_api_key,
+        kwargs["functions"] = import_module(
+            function_call_module_name).functions
+        
+    openai_client = OpenAI(api_key=openai_api_key,
+                    base_url=openai_api_base,)
+    return openai_client.chat.completions.create(
         model=model,
         messages=messages,
         top_p=1,
@@ -147,12 +158,10 @@ def start_receiving_openai_response(
         logit_bias={},
         user=user,
         stream=True,
-        api_type=openai_api_type,
-        api_base=openai_api_base,
-        api_version=openai_api_version,
-        deployment_id=openai_deployment_id,
-        **kwargs,
-    )
+        #   api_type=openai_api_type,
+        #   api_version=openai_api_version,
+        #   deployment_id=openai_deployment_id,
+        **kwargs)
 
 
 def consume_openai_stream_to_write_reply(
@@ -162,7 +171,7 @@ def consume_openai_stream_to_write_reply(
     context: BoltContext,
     user_id: str,
     messages: List[Dict[str, Union[str, Dict[str, str]]]],
-    stream: Generator[OpenAIObject, Any, None],
+    stream: Generator[ChatCompletion, Any, None],
     timeout_seconds: int,
     translate_markdown: bool,
 ):
@@ -180,17 +189,17 @@ def consume_openai_stream_to_write_reply(
         for chunk in stream:
             spent_seconds = time.time() - start_time
             if timeout_seconds < spent_seconds:
-                raise Timeout()
+                raise APITimeoutError()
             # Some versions of the Azure OpenAI API return an empty choices array in the first chunk
             if context.get("OPENAI_API_TYPE") == "azure" and not chunk.choices:
                 continue
             item = chunk.choices[0]
-            if item.get("finish_reason") is not None:
+            if item.finish_reason is not None:
                 break
-            delta = item.get("delta")
-            if delta.get("content") is not None:
+            delta = item.delta
+            if delta.content is not None:
                 word_count += 1
-                assistant_reply["content"] += delta.get("content")
+                assistant_reply["content"] += delta.content
                 if word_count >= 20:
 
                     def update_message():
@@ -212,7 +221,7 @@ def consume_openai_stream_to_write_reply(
                     thread.start()
                     threads.append(thread)
                     word_count = 0
-            elif delta.get("function_call") is not None:
+            elif delta.function_call is not None:
                 # Ignore function call suggestions after content has been received
                 if assistant_reply["content"] == "":
                     for k in function_call.keys():
@@ -227,9 +236,11 @@ def consume_openai_stream_to_write_reply(
                 pass
 
         if function_call["name"] != "":
-            function_call_module_name = context.get("OPENAI_FUNCTION_CALL_MODULE_NAME")
+            function_call_module_name = context.get(
+                "OPENAI_FUNCTION_CALL_MODULE_NAME")
             function_call_module = import_module(function_call_module_name)
-            function_to_call = getattr(function_call_module, function_call["name"])
+            function_to_call = getattr(
+                function_call_module, function_call["name"])
             function_args = json.loads(function_call["arguments"])
             function_response = function_to_call(**function_args)
             function_message = {
@@ -258,7 +269,8 @@ def consume_openai_stream_to_write_reply(
                 user_id=user_id,
                 messages=messages,
                 stream=sub_stream,
-                timeout_seconds=int(timeout_seconds - (time.time() - start_time)),
+                timeout_seconds=int(
+                    timeout_seconds - (time.time() - start_time)),
                 translate_markdown=translate_markdown,
             )
             return
@@ -445,18 +457,22 @@ def calculate_tokens_necessary_for_function_call(context: BoltContext) -> int:
         return _prompt_tokens_used_by_function_call_cache
 
     def _calculate_prompt_tokens(functions) -> int:
-        return openai.ChatCompletion.create(
-            api_key=context.get("OPENAI_API_KEY"),
-            model=context.get("OPENAI_MODEL"),
-            messages=[{"role": "user", "content": "hello"}],
+        openai_client = OpenAI(api_key=context.get("OPENAI_API_KEY"),
+                        base_url=context.get("OPENAI_API_BASE"),)
+        return openai_client.chat.completions.create(
+            model=context.get(
+                "OPENAI_MODEL"),
+            messages=[
+                {"role": "user", "content": "hello"}],
             max_tokens=1024,
             user="system",
-            api_type=context.get("OPENAI_API_TYPE"),
-            api_base=context.get("OPENAI_API_BASE"),
-            api_version=context.get("OPENAI_API_VERSION"),
-            deployment_id=context.get("OPENAI_DEPLOYMENT_ID"),
-            **({"functions": functions} if functions is not None else {}),
-        )["usage"]["prompt_tokens"]
+            # api_type=context.get(
+            #     "OPENAI_API_TYPE"),
+            # api_version=context.get(
+            #     "OPENAI_API_VERSION"),
+            # deployment_id=context.get(
+            #     "OPENAI_DEPLOYMENT_ID"),
+            **({"functions": functions} if functions is not None else {}))["usage"]["prompt_tokens"]
 
     # TODO: If there is a better way to calculate this, replace the logic with it
     module = import_module(function_call_module_name)
@@ -507,7 +523,7 @@ def generate_slack_thread_summary(
     )
     spent_time = time.time() - start_time
     logger.debug(f"Making a summary took {spent_time} seconds")
-    return openai_response["choices"][0]["message"]["content"]
+    return openai_response.choices[0].message.content
 
 
 def generate_proofreading_result(
@@ -552,7 +568,7 @@ def generate_proofreading_result(
     )
     spent_time = time.time() - start_time
     logger.debug(f"Proofreading took {spent_time} seconds")
-    return openai_response["choices"][0]["message"]["content"]
+    return openai_response.choices[0].message.content
 
 
 def generate_chatgpt_response(
@@ -590,4 +606,4 @@ def generate_chatgpt_response(
     )
     spent_time = time.time() - start_time
     logger.debug(f"Proofreading took {spent_time} seconds")
-    return openai_response["choices"][0]["message"]["content"]
+    return openai_response.choices[0].message.content

@@ -3,7 +3,8 @@ import logging
 import re
 import time
 
-from openai.error import Timeout
+# from openai.error import Timeout
+from openai import APITimeoutError
 from slack_bolt import App, Ack, BoltContext, BoltResponse
 from slack_bolt.request.payload_utils import is_event
 from slack_sdk.errors import SlackApiError
@@ -178,7 +179,7 @@ def respond_to_app_mention(
                 translate_markdown=TRANSLATE_MARKDOWN,
             )
 
-    except Timeout:
+    except APITimeoutError:
         if wip_reply is not None:
             text = (
                 (
@@ -416,7 +417,7 @@ def respond_to_new_message(
                 translate_markdown=TRANSLATE_MARKDOWN,
             )
 
-    except Timeout:
+    except APITimeoutError:
         if wip_reply is not None:
             text = (
                 (
@@ -699,7 +700,7 @@ def prepare_and_share_thread_summary(
                 thread_ts=private_metadata.get("thread_ts"),
                 text=f"{here_is_summary}\n\n{summary}",
             )
-    except Timeout:
+    except APITimeoutError:
         client.views_update(
             view_id=payload["id"],
             view={
@@ -876,7 +877,7 @@ def display_proofreading_result(
                 ],
             },
         )
-    except Timeout:
+    except APITimeoutError:
         client.views_update(
             view_id=payload["id"],
             view={
@@ -1057,7 +1058,7 @@ def display_chat_from_scratch_result(
                 ],
             },
         )
-    except Timeout:
+    except APITimeoutError:
         client.views_update(
             view_id=payload["id"],
             view={
