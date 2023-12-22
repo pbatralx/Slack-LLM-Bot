@@ -49,8 +49,8 @@ def build_thread_replies_as_combined_text(
     ):
         for reply in page.get("messages", []):
             user = reply.get("user")
-            if user == context.bot_user_id:  # Skip replies by this app
-                continue
+            # if user == context.bot_user_id:  # Skip replies by this app
+            #     continue
             if user is None:
                 user = client.bots_info(bot=reply.get("bot_id"))["bot"]["user_id"]
                 if user is None or user == context.bot_user_id:
