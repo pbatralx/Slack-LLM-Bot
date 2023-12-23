@@ -19,18 +19,44 @@ from app.env import (
 )
 from app.slack_ops import build_home_tab
 
+from slack_bolt.oauth.oauth_settings import OAuthSettings
+from slack_sdk.oauth.installation_store import FileInstallationStore
+from slack_sdk.oauth.state_store import FileOAuthStateStore
 
 if __name__ == "__main__":
     from slack_bolt.adapter.socket_mode import SocketModeHandler
 
     logging.basicConfig(level=SLACK_APP_LOG_LEVEL)
 
+    oauth_settings = OAuthSettings(
+        client_id=os.environ["SLACK_CLIENT_ID"],
+        client_secret=os.environ["SLACK_CLIENT_SECRET"],
+        scopes=[
+            "commands",
+            "app_mentions:read",
+            "channels:history",
+            "groups:history",
+            "im:history",
+            "mpim:history",
+            "chat:write.public",
+            "chat:write",
+            "users:read"
+        ],
+        user_scopes=["chat:write"],
+        installation_store=FileInstallationStore(
+            base_dir="./data/installations"),
+        state_store=FileOAuthStateStore(
+            expiration_seconds=600, base_dir="./data/states")
+    )
+
     app = App(
-        token=os.environ["SLACK_BOT_TOKEN"],
+        # token=os.environ["SLACK_BOT_TOKEN"],
+        oauth_settings=oauth_settings,
         before_authorize=before_authorize,
         process_before_response=True,
     )
-    app.client.retry_handlers.append(RateLimitErrorRetryHandler(max_retry_count=2))
+    app.client.retry_handlers.append(
+        RateLimitErrorRetryHandler(max_retry_count=2))
 
     register_listeners(app)
 
@@ -71,5 +97,6 @@ if __name__ == "__main__":
         context["OPENAI_FUNCTION_CALL_MODULE_NAME"] = OPENAI_FUNCTION_CALL_MODULE_NAME
         next_()
 
-    handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    handler.start()
+    # handler = SocketModeHandler(app)
+    # handler.start()
+    app.start(3000)

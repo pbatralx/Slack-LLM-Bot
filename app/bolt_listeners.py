@@ -66,6 +66,20 @@ def respond_to_app_mention(
     client: WebClient,
     logger: logging.Logger,
 ):
+    # check for clear conversation command in text
+    if ":broom:" in payload.get("text", "").lower():
+        # Always reply in a thread to the original message
+        original_message_ts = payload["ts"]
+        response_channel = context.channel_id
+
+        # Send response in a thread that the command only works in DMs
+        client.chat_postMessage(
+            channel=response_channel,
+            thread_ts=original_message_ts,
+            text="Sorry, The ':broom:' (clear convo) command only works in private conversations with the bot."
+        )
+        return
+    
     if payload.get("thread_ts") is not None:
         parent_message = find_parent_message(
             client, context.channel_id, payload.get("thread_ts")
@@ -90,7 +104,7 @@ def respond_to_app_mention(
             return
 
         user_id = context.actor_user_id or context.user_id
-
+        
         if payload.get("thread_ts") is not None:
             # Mentioning the bot user in a thread
             replies_in_thread = client.conversations_replies(
@@ -118,7 +132,8 @@ def respond_to_app_mention(
                 )
         else:
             # Strip bot Slack user ID from initial message
-            msg_text = re.sub(f"<@{context.bot_user_id}>\\s*", "", payload["text"])
+            msg_text = re.sub(
+                f"<@{context.bot_user_id}>\\s*", "", payload["text"])
             msg_text = redact_string(msg_text)
             messages.append(
                 {
@@ -145,7 +160,8 @@ def respond_to_app_mention(
             num_context_tokens,
             max_context_tokens,
         ) = messages_within_context_window(messages, context=context)
-        num_messages = len([msg for msg in messages if msg.get("role") != "system"])
+        num_messages = len(
+            [msg for msg in messages if msg.get("role") != "system"])
         if num_messages == 0:
             update_wip_message(
                 client=client,
@@ -237,6 +253,29 @@ def respond_to_new_message(
         is_in_dm_with_bot = payload.get("channel_type") == "im"
         is_no_mention_required = False
         thread_ts = payload.get("thread_ts")
+        
+        # check for clear conversation command in text
+        if ":broom:" in payload.get("text", "").lower():
+            if payload.get("channel_type") == "im":
+                # Execute delete_bot_messages if it's a DM with the bot
+                delete_bot_messages(client=client,
+                                    channel_id=context.channel_id,
+                                    bot_user_id=context.bot_user_id,
+                                    user_id=context.user_id,
+                                    user_token=context.user_token,
+                                    logger=logger)
+            # Determine if the message is part of a thread
+            elif thread_ts:
+                response_channel = context.channel_id
+
+                # Send a message indicating the command only works in DMs
+                client.chat_postMessage(
+                    channel=response_channel,
+                    thread_ts=thread_ts,
+                    text=f"Sorry, The ':broom:' (clear convo) command only works in private conversations with the bot."
+                )
+            return
+
         if is_in_dm_with_bot is False and thread_ts is None:
             return
 
@@ -274,7 +313,8 @@ def respond_to_new_message(
                 for message in messages_in_context:
                     if message.get("ts") == thread_ts:
                         the_parent_message_found = True
-                        is_no_mention_required = is_no_mention_thread(context, message)
+                        is_no_mention_required = is_no_mention_thread(
+                            context, message)
                         break
                 if the_parent_message_found is False:
                     parent_message = find_parent_message(
@@ -297,7 +337,8 @@ def respond_to_new_message(
                     indices_to_remove.append(idx)
                     continue
                 maybe_new_messages = (
-                    reply.get("metadata", {}).get("event_payload", {}).get("messages")
+                    reply.get("metadata", {}).get(
+                        "event_payload", {}).get("messages")
                 )
                 if maybe_new_messages is not None:
                     if len(messages) == 0 or user_id is None:
@@ -354,7 +395,8 @@ def respond_to_new_message(
         wip_reply = post_wip_message(
             client=client,
             channel=context.channel_id,
-            thread_ts=payload.get("thread_ts") if is_in_dm_with_bot else payload["ts"],
+            thread_ts=payload.get(
+                "thread_ts") if is_in_dm_with_bot else payload["ts"],
             loading_text=loading_text,
             messages=messages,
             user=user_id,
@@ -365,7 +407,8 @@ def respond_to_new_message(
             num_context_tokens,
             max_context_tokens,
         ) = messages_within_context_window(messages, context=context)
-        num_messages = len([msg for msg in messages if msg.get("role") != "system"])
+        num_messages = len(
+            [msg for msg in messages if msg.get("role") != "system"])
         if num_messages == 0:
             update_wip_message(
                 client=client,
@@ -476,7 +519,8 @@ def show_summarize_option_modal(
             "Could you summarize the discussion in 200 characters or less?"
         ),
     )
-    thread_ts = body.get("message").get("thread_ts", body.get("message").get("ts"))
+    thread_ts = body.get("message").get(
+        "thread_ts", body.get("message").get("ts"))
     where_to_display_options = [
         {
             "text": {
@@ -826,7 +870,8 @@ def display_proofreading_result(
 ):
     try:
         openai_api_key = context.get("OPENAI_API_KEY")
-        original_text = extract_state_value(payload, "original_text").get("value")
+        original_text = extract_state_value(
+            payload, "original_text").get("value")
         text = "\n".join(map(lambda s: f">{s}", original_text.split("\n")))
         result = generate_proofreading_result(
             context=context,
@@ -1163,3 +1208,39 @@ def before_authorize(
         )
         return BoltResponse(status=200, body="")
     next_()
+
+
+def delete_bot_messages(client, channel_id, bot_user_id, user_id, user_token, logger):
+    try:
+        # Notify users about the ongoing clearing process
+        notification_msg = client.chat_postMessage(
+            channel=channel_id,
+            text="Clearing conversation history :hourglass_flowing_sand:"
+        )
+
+        # Fetch recent messages in the channel
+        response = client.conversations_history(channel=channel_id)
+
+        if response.get("ok"):
+            # Collect message timestamps for deletion
+            messages = response.get("messages", [])
+            messages.reverse()
+            for msg in messages:
+                # Check if the message is sent by the bot
+                if msg.get("user") == bot_user_id:
+                    # Delete the bot's message
+                    client.chat_delete(channel=channel_id, ts=msg.get("ts"))
+                if msg.get("user") == user_id:
+                    # Delete the user's message
+                    client.chat_delete(channel=channel_id, ts=msg.get(
+                        "ts"), as_user=True, token=user_token)
+            
+        else:
+            logger.error("Failed to fetch messages from Slack API")
+
+    except SlackApiError as e:
+        logger.error(f"Slack API error occurred: {e.response['error']}")
+
+    except Exception as e:
+        logger.error(f"Unexpected error occurred: {e}")
+
